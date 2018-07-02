@@ -1,6 +1,6 @@
 # Code Template for a VISC R Data Package
 
-This repo contains default code for data processing assays and QC reports. It is not intended to be a starting point for new packages, as it does not contain some of the necessary files and directories for packages. However, it does contain standard data processing functions, standard QC report formatting functions, and standard processing code for BAMA, ELISA, NAb, and ICS.
+This repo contains default code for data processing assays and QC reports. It is not intended to be a starting point for new packages, as it does not contain some of the necessary files and directories for packages. Use `DataPackageR::datapackage_skeleton()` for that. However, it does contain standard data processing functions, standard QC report formatting functions, and standard processing code for BAMA, ELISA, NAb, and ICS.
 
 PK code can be found in the Nussenzweig PK packages. The data and data processing have not been standardized enough yet to publish here.
 
@@ -12,6 +12,10 @@ Note that this code is still configured for datasets.R-based package building. I
 * protocol_specific.R contains protocol-specific objects, definitions, functions, etc. This is sourced at the top of each preprocess_*.Rmd script.
 * reproducibility.R contains code for reproducibility tables. This is sourced at the end of each preprocess_*.Rmd script.
 * preprocess_*.Rmd contains code for processing each respective assay
+
+Note that metadata does not arrive as systematically as assay data. The VISC project managers are trying to streamline this process, but be aware that when you start processing assay data, you might have to ping the project managers to find treatment assignment information, demographics, etc. The best way I've found to handle metadata is to put it in `inst/extdat/` and read it in `protocol_specific.R`. If you source `protocol_specific.R` in each assay script, you'll have rx or demo or whatever defined as an object that you can refer to. If you save these datasets using `SaveObj()`, then alternately, you can `load()` the .Rda files from the `/data/` directory of the package.
+
+---
 
 ## ICS-specific processing
 This is a short description of the ICS processing flow. The processing code (`data-raw/preprocess_flow.Rmd` produces HTML output in `inst/doc/`. To run ICS preprocessing code, you’ll need to do some things first:
@@ -70,3 +74,18 @@ COMPASS
 
 ### Step 12
 Gating plots for review
+
+---
+
+## BAMA Notes
+
+For QCing BAMA data, we have worked out the following process with the Tomaras lab:
+1. Build package and internally QC and sanity check the data
+2. Make sure you run `writePerm()` in your BAMA code with `qc=TRUE`. This outputs a CSV QC file for lab programmatic QC.
+3. Write and internally review the BAMA QC report.
+4. Upload the QC csv file and QC report to COWS: `https://atlas.scharp.org/cpas/project/HVTN/Tools%20and%20Reports/Collaborative%20Workspace/Data%20Sets-Reports/begin.view?`
+  * Navigate to the `Duke [Tomaras]` tab
+  * Navigate to the LUM folder
+  * Navigate to the relevant cvdNNN numbered folder, or create one if it doesn't exist
+  * Use the COWS GUI tools to upload your files. CSV files should have a date in the filename. The BAMA code does this by default.
+5. Inform the lab by email that the QC report and csv file have been uploaded.
