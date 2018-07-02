@@ -41,32 +41,32 @@ FYI, `protocol_specific.R` contains some object definitions that are relevant to
 
 *In general, the ICS flow goes like this:*
 
-##Step 1 
+### Step 1 
 Basic definitions, source files, load packages, set options
 
-##Step 2
+### Step 2
 Parse XML files, save first local object
 
-##Step 3, when needed
+### Step 3, when needed
 Used to standardize the parsed files--This will vary greatly by protocol and will often need Greg’s help. Save local object.
 
-##Step 4
+### Step 4
 Print list of nodes and gating hierarchy
 
-##Step 5
+### Step 5
 Add Boolean gates — this adds the Booleans to the data. Save second local object.
 
-##Step 6
+### Step 6
 Extract the ICS data out of the GatingSet created in Step 7 into a data.table. Compute viability, compute marginals, and joint marginals, compute background values and parent values.
 
-##Step 7
+### Step 7
 Fisher p-values
 
-##Step 10
+### Step 10
 MIMOSA
 
-##Step 11
+### Step 11
 COMPASS
 
-##Step 12
+### Step 12
 Gating plots for review
