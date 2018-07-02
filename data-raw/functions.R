@@ -121,6 +121,7 @@ dataProfile <- function(df){
 
 
 # FUNCTION: kableit
+# wrapper for kable() function
 kableit <- function(obj, format="html", full_width = FALSE, ...){
   kable(setDT(lapply(obj, function(x) x <- ifelse(is.na(x), "", x))), format = format, ...) %>% kable_styling(full_width = full_width)
 }
@@ -173,7 +174,7 @@ writePerm <- function(df, suffix, excl = NULL, qc = FALSE){
   qckeepVars <- c("notebook", "instrument_type", "filename", "testdt", "detection", "isotype", "spectype", "spec_primary", "ptid", "visitno",
                   "antigen", "antigen_lot", "beadsetno", "dilution", "pctcv", "fi", "fi_bkgd", "blank", "fi_bkgd_blank",
                   "fi_bkgd_baseline", "delta", "pos_threshold", "response", "filter_reason", "tab", "spec_actvy", "auc_atlas")
-                  # NOTE: group should never be in here, for blinding.
+                  # NOTE: group should never be in here, for lab blinding.
   if(!is.null(excl)){qckeepVars <- setdiff(qckeepVars, excl)}
 
   outname <- paste0(pkgName, suffix)
@@ -234,6 +235,7 @@ saveObj <- function(inobj, suffix, prefix = pkgName){
 #     data_in        : data for a specific study, antigen, cytokine combination, and tcellsub (data.table)
 #     ref_antigen_in : baseline antigen to use (character scaler)
 #     seed_in        : seed for MIMOSA (scaler)
+# Note that many variable names here assume standard flow processing code. You may have to update the function if data columns are named differently.
 get_MIMOSA_probs_fun <- function(data_in, ref_antigen_in, seed_in = 537526546){
   tmp <- copy(data_in)
   tmp[, CountNeg := ParentCount - Count]
@@ -273,19 +275,6 @@ get_MIMOSA_probs_fun <- function(data_in, ref_antigen_in, seed_in = 537526546){
   return(out)
 }
 
-
-
-# FUNCTION: get_fdr_values()
-# CONTEXT: ICS (MIMOSA)
-# Description : get fdr p values from response probabilities (i.e. for MIMOSA and MIMOSA2 response probabilities)
-# Arguments :
-#   response_prob_in : response probabilities (vector)
-get_fdr_values <- function(response_prob_in){
-  fdr_vals <- rep(0, length(response_prob_in))
-  adj_p_order <- order(response_prob_in, decreasing = TRUE)
-  fdr_vals[adj_p_order] <- cumsum((1 - response_prob_in)[adj_p_order]) / 1:length(response_prob_in)
-  fdr_vals
-}
 
 # FUNCTION: adjustMimosaFDR()
 # CONTEXT: ICS (MIMOSA)
