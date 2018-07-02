@@ -1,0 +1,113 @@
+---
+title: <Protocol name> ELISA Processing
+shorttitle: <Protocol name> ELISA
+from:
+- name: Your name
+email: your_id@fredhutch.org
+includesummary: yes
+summary: ELISA processing for the <Protocol name> study
+output: html_document
+vignette: >
+  %\VignetteIndexEntry{<Protocol name> ELISA QC Report}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+<!--
+Program Name: preprocess_elisa.Rmd
+Creation Date: 1/1/2010
+Full name of author: Your name
+Project or Protocol: <Protocol name>
+Purpose or description of program: ELISA data processing
+Location of program: git@github.com/FredHutch/<protocol name>.git (data-raw/)
+Location of input data: git@github.com/FredHutch/<protocol name>.git (inst/extdata/)
+-->
+
+This report documents the <Protocol name> ELISA data processing.
+
+# Preliminaries
+We first source our external functions and global variables, load libraries, and set options.
+
+```{r 'prelim', echo=TRUE, eval=TRUE}
+library(data.table)
+library(knitr)
+library(kableExtra)
+
+# Functions
+sys.source("functions.R"), envir=topenv())
+sys.source("qc_functions.R"), envir=topenv())
+sys.source("protocol_specific.R"), envir=topenv())
+
+# -------------------------------------- #
+# Read file
+if(exists("elisa_qfilename")){
+  elisa <- fread(file.path("..", "inst", "extdata", elisa_qfilename))
+  elisa_unmod <- copy(elisa)
+} else {
+  stop("In protocol_specific.R, you must define elisa_qfilename to point to the ELISA file(s) in inst/extdata/.")
+}
+
+# rx
+setkey(elisa, ptid)
+elisa <- merge(elisa, rx, all.x = TRUE)
+```
+
+
+# Processing
+Elisa requires only changing concentration from character to numeric.
+```{r 'processing', echo=TRUE, eval=TRUE}
+elisa[, concentration := as.numeric(gsub("<", "", concentration))]
+
+results <- elisa[, .N, .(visit, is.na(concentration), oor_indicator=="<<")]
+kableit(results, caption = "Non-missing concentration vs populated oor_indicator")
+
+# output
+saveObj("elisa", "elisa")
+```
+
+# Summaries
+## Quick profile of input file prior to processing:
+```{r}
+# -------------------------------------- #
+# Generate QC report
+# -------------------------------------- #
+
+# data profile of input data
+dP <- dataProfile(elisa_unmod)
+kableit(dP)
+```
+
+## Quick profile of output dataset:
+```{r}
+# data profile of output data
+dP <- dataProfile(elisa)
+kableit(dP, caption = "Variable population of output dataset")
+```
+
+## Reproducibility Tables
+
+```{r echo=FALSE, eval=TRUE}
+path <- "reproducibility.R")
+read_chunk(path)
+```
+
+```{r repro, echo=FALSE, eval=TRUE}
+<<reprotab>>
+```
+
+```{r copySourcedFiles, eval = FALSE, echo = FALSE}
+# this copies any files that are sourced in this Rmd to inst/doc/ and vignettes/ so that the package vignettes build properly at installation
+# this is new code, and may still be a little buggy or not function as expectged, particularly on Windows
+thisfile <- knitr::current_input()
+con <- file(thisfile, open = "r")
+file <- readLines(con)
+m1 <- unname(sapply(file, function(x){grepl('sys.source(.*)', x) & !grepl('unname', x)}))
+m2 <- unname(sapply(file, function(x){grepl('read_chunk(.*)', x) & !grepl('unname', x)}))
+filesToCopy1 <- sapply(strsplit(file[m1], split = '"'), function(x) x[2])
+filesToCopy2 <- sapply(strsplit(file[m2], split = '"'), function(x) x[2])
+filesToCopy <- c(filesToCopy1, filesToCopy2)
+for(f in filesToCopy){
+  file_copy(f, paste0(c("../inst/doc/", "../vignettes/"), f), overwrite = TRUE)
+}
+```

@@ -1,0 +1,174 @@
+\documentclass[11pt]{article}
+
+\usepackage{lastpage}
+\usepackage{amsmath,amssymb}
+\usepackage[hmargin=2cm, top=.75in, bottom=1in, footskip=0.3cm]{geometry}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{float}
+\usepackage{pdflscape}
+\usepackage{rotating} %for xtable sideways
+\usepackage{verbatim}
+\usepackage{framed}
+\usepackage{parskip}
+\usepackage{longtable}
+\usepackage{color}
+\usepackage{fancyvrb}
+\usepackage{lipsum}
+\usepackage{lmodern}
+\usepackage{amssymb,amsmath}
+\usepackage{ifxetex,ifluatex}
+\usepackage{fancyhdr, graphicx, lastpage, ifthen, lscape}
+\usepackage[acronym,nomain]{glossaries}
+\usepackage[absolute]{textpos}
+\usepackage[table]{xcolor}
+\usepackage{natbib}
+\usepackage[font=footnotesize,skip=4pt,justification=centering]{caption}
+%\usepackage[backend=bibtex,citestyle=authoryear-comp,natbib=true]{biblatex}
+\usepackage{fixltx2e} % provides \textsubscript
+
+\renewcommand{\bibsection}{}
+
+\ifnum 0\ifxetex 1\fi\ifluatex 1\fi=0 % if pdftex
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+\else % if luatex or xelatex
+  \ifxetex
+    \usepackage{mathspec}
+    \usepackage{xltxtra,xunicode}
+  \else
+    \usepackage{fontspec}
+  \fi
+  \defaultfontfeatures{Mapping=tex-text,Scale=MatchLowercase}
+  \newcommand{\euro}{€}
+\fi
+% use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+% use microtype if available
+\IfFileExists{microtype.sty}{%
+  \usepackage{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
+\definecolor{shadecolor}{RGB}{248,248,248}
+
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\let\insertdate\@date %get current date into insertdate
+\patchcmd{\@fancyhead}{\rlap}{\color{gray}\rlap}{}{}
+\patchcmd{\headrule}{\hrule}{\color{gray}\hrule}{}{}
+\patchcmd{\@fancyfoot}{\rlap}{\color{gray}\rlap}{}{}
+\patchcmd{\footrule}{\hrule}{\color{gray}\hrule}{}{}
+\makeatother
+
+\newcommand{\VerbBar}{|}
+\newcommand{\VERB}{\Verb[commandchars=\\\{\}]}
+\newcommand{\B}{\rule[-2ex]{0pt}{0pt}} % bottom strut
+
+\renewcommand{\abstractname}{Overview}
+
+% Configure hyperref formatting bookmarks and references
+\hypersetup{
+  colorlinks = true, % color links instead of covering them w/red boxes
+  urlcolor   = blue, % color for external hyperlinks
+  linkcolor  = blue, % color of internal links
+  citecolor  = gray  % color of citations
+}
+
+%this is to adjust header and footer in landscaped pages
+\fancypagestyle{lscape}{%
+  \fancyhf{} % clear all header and footer fields
+  \fancyhead[R]{%
+    \begin{footnotesize}
+      \begin{textblock}{1}(0.7,1.5){\color{gray}\rotatebox{90}{$shorttitle$}}\end{textblock}
+    \end{footnotesize}
+  }
+  \fancyfoot[L]{%
+    \begin{footnotesize}
+      \begin{textblock}{1}(21,1.75){\color{gray}\rotatebox{90}{Page \thepage{}~of~\pageref{LastPage}}}\end{textblock}
+    \end{footnotesize}
+  }
+  \fancyfoot[R]{%
+    \begin{footnotesize}
+      \begin{textblock}{19.8}(1.5,23.20){\color{gray}\rotatebox{90}{\Rver}}\end{textblock}
+    \end{footnotesize}
+  }
+
+  \setlength{\TPHorizModule}{1cm}
+  \setlength{\TPVertModule}{1cm}
+  \renewcommand{\headrulewidth}{0.0pt}
+  \renewcommand{\footrulewidth}{0.0pt}
+}
+
+%decrease margins for landscape pages
+\newenvironment{changemargin}[2]{%
+  \begin{list}{}{%
+    \setlength{\topsep}{0pt}%
+    \setlength{\leftmargin}{#1}%
+    \setlength{\rightmargin}{#2}%
+    %\setlength{\listparindent}{\parindent}%
+    %\setlength{\itemindent}{\parindent}%
+    \setlength{\parsep}{\parskip}%
+  }%
+  \item[]
+  \end{list}
+}
+
+%set header and footer for first page
+\renewcommand{\headrulewidth}{0.8pt}
+\renewcommand{\footrulewidth}{0.8pt}
+
+% headers/footers for title page
+\fancypagestyle{titlepage}{
+  \fancyhf{} % clear all header and footer fields
+  \fancyhead[L]{\includegraphics[height=1cm]{./logos/scharp.png}}
+  \fancyhead[C]{\includegraphics[height=1cm]{./logos/new_VISC_logo_color.jpg}}
+  \fancyhead[R]{\includegraphics[height=1cm]{./logos/FredHutch_h_tag_4col_CMYK_tm.png}}
+  \fancyfoot[C]{\thepage{}~of~\pageref{LastPage}}
+}
+
+% headers/footers for remaining pages
+\fancyhead[L]{VISC report}
+\fancyhead[C]{}
+
+\fancyfoot[L]{\Rver}
+\fancyfoot[C]{}
+\fancyfoot[R]{\thepage{}~of~\pageref{LastPage}}
+
+
+%page settings
+\setlength{\footskip}{36pt}
+\setlength{\parindent}{0pt}
+\setlength{\headheight}{33pt}
+\pagestyle{fancy}
+
+\makeatletter
+\newenvironment{kframe}{%
+ \def\at@end@of@kframe{}%
+ \ifinner\ifhmode%
+  \def\at@end@of@kframe{\end{minipage}}%
+  \begin{minipage}{\columnwidth}%
+ \fi\fi%
+ \def\FrameCommand##1{\hskip\@totalleftmargin \hskip-\fboxsep
+ \colorbox{shadecolor}{##1}\hskip-\fboxsep
+     % There is no \\@totalrightmargin, so:
+     \hskip-\linewidth \hskip-\@totalleftmargin \hskip\columnwidth}%
+ \MakeFramed {\advance\hsize-\width
+   \@totalleftmargin\z@ \linewidth\hsize
+   \@setminipage}}%
+ {\par\unskip\endMakeFramed%
+ \at@end@of@kframe}
+\makeatother
+
+%tabfill is for memo lines so they wrap
+\makeatletter
+\newcommand\tabfill[1]{%
+  \dimen@\linewidth
+  \advance\dimen@\@totalleftmargin
+  \advance\dimen@-\dimen\@curtab
+  \parbox[t]\dimen@{%
+    \leftskip=2em\hspace*{-2em}#1\ifhmode\strut\fi}%
+}
+\makeatother

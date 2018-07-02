@@ -1,0 +1,159 @@
+---
+title: "<Protocol name> NAb Processing"
+shorttitle: "<Protocol name> NAb"
+from:
+ - name: Your name
+   email: <your_id>@fredhutch.org
+includesummary: yes
+summary: 
+  NAb processing for the <Protocol name> study 
+---
+
+<!--
+Program Name: preprocess_nab.Rmd
+Creation Date: 1/1/2010
+Full name of author: Your name
+Project or Protocol: <Protocol name>
+Purpose or description of program: NAb data processing
+Location of program: git@github.com/FredHutch/<protocol name>.git
+Location of input data: git@github.com/FredHutch/<protocol name>.git
+-->
+
+This report documents the <Protocol name> NAb data processing.
+
+# Preliminaries
+We first source our external functions and global variables, load libraries, and set options.
+
+```{r 'prelim', echo=TRUE, eval=TRUE}
+
+# Libraries
+suppressPackageStartupMessages({
+  library(knitr)
+  library(data.table)
+  library(xtable)
+  library(readxl)
+  library(ggplot2)
+  library(kableExtra)}
+)
+
+# Functions
+sys.source("functions.R"), envir=topenv())
+sys.source("qc_functions.R"), envir=topenv())
+sys.source("protocol_specific.R"), envir=topenv())
+```
+
+# Processing
+Next we read in the qdata. The only time point in the qdata file is visitno 30, which appears to be week 30.
+
+```{r 'read_data'}
+nab <- rbindlist(lapply(nab_qfilenames,
+                        function(x){fread(file.path("..", "inst", "extdata", x))[, sourcefile := x]}),
+                 use.names=TRUE, fill=TRUE)
+setnames(nab, names(nab), tolower(names(nab)))
+
+# add Week
+nab[, Week := visitno]
+```
+
+```{r 'rx', eval=runrx, echo=runrx}
+# merge group info
+cat("# Treatment Assignment\nTreatment assignment information is merged in.\n")
+# merge in treatment info
+setkey(nab, ptid)
+nab <- merge(nab, rx, all.x=TRUE)
+kableit(setkey(nab[, .N, .(group)], group), caption = "Record count by group")
+kableit(setkey(nab[, .N, .(ptid, group)], group, ptid), caption = "Record count by group and ptid")
+```
+
+```{r 'tier'}
+# merge tier/clade
+cat("# Tier/Clade\nTier and clade information is merged in.\n")
+setkey(nab, isolate)
+nab <- merge(nab, tier, all.x=TRUE) # tier is created in protocol_specific.R
+kableit(setkey(nab[, .N, .(isolate, tier, clade)], isolate), caption = "Record count by isolate")
+```
+
+
+# Response call
+```{r 'response_call'}
+nab[method=="Dilution", titer_mod := nabTiter(titer, "dilution")]
+nab[method=="Concentration", titer_mod := nabTiter(titer, "Concentration")]
+nab[, response := nabResponse(titer)]
+
+formula <- as.formula(paste(paste(setdiff(names(nab), c("titer", "titer_mod", "response", "poscrit")), collapse = " + "), "~ poscrit"))
+nab <- dcast(nab, formula, value.var = c("titer", "titer_mod", "response"))
+setkey(nab, celltype, isolate, ptid, visitno)
+```
+
+Some summaries of the unaveraged data follow.
+
+## Analytes and Cell Types
+```{r}
+kableit(nab[, .N, .(isolate, celltype)])
+```
+
+## Time points represented in the data, with record count
+```{r}
+kableit(nab[, .N, Week])
+```
+
+## Range of Titer Values
+```{r}
+kableit(data.table(Statistic = names(summary(nab$titer_mod_50)), Value=as.numeric(summary(nab$titer_mod_50))), caption = "Summary of 50% positive criteria titers")
+kableit(data.table(Statistic = names(summary(nab$titer_mod_80)), Value=as.numeric(summary(nab$titer_mod_80))), caption = "Summary of 80% positive criteria titers")
+```
+
+## Relationship of titer_mod_50 to titer_mod_80
+```{r}
+ggplot(nab, aes(x = titer_mod_50, y = titer_mod_80)) +
+  geom_point(na.rm=TRUE, show.legend=TRUE)
+```
+
+# CDS variables
+```{r}
+nab[, cds_prot              := "cvd465"]
+nab[, cds_sub_prot          := NA]
+nab[, cds_subject_id        := paste(cds_prot, ptid, sep = ' ')]
+nab[, cds_specimen_type     := 'serum']
+nab[, cds_vaccine_matched   := 0]
+nab[, cds_response_id50_std := response_50]
+nab[, cds_response_id80_std := response_80]
+nab[, cds_slope             := log(4)/(log(titer_mod_80)-log(titer_mod_50))]
+nab[, cds_lab_code          := ifelse(labid == "MS", "Seaman",
+                                      ifelse(labid %in% c("DM","DU"), "Montefiori", labid))]
+```
+
+# Output
+```{r 'output'}
+# separate serum into direct binding dilution and titration dilutions
+setkey(nab, ptid, Week)
+saveObj("nab", "nab")
+```
+
+## Reproducibility Tables
+
+```{r echo=FALSE, eval=TRUE}
+path <- "reproducibility.R")
+read_chunk(path)
+```
+
+```{r repro, echo=FALSE, eval=TRUE}
+<<reprotab>>
+```
+
+```{r copySourcedFiles, eval = FALSE, echo = FALSE}
+# this copies any files that are sourced in this Rmd to inst/doc/ and vignettes/ so that the package vignettes build properly at installation
+# this is new code, and may still be a little buggy or not function as expectged, particularly on Windows
+thisfile <- knitr::current_input()
+con <- file(thisfile, open = "r")
+file <- readLines(con)
+m1 <- unname(sapply(file, function(x){grepl('sys.source(.*)', x) & !grepl('unname', x)}))
+m2 <- unname(sapply(file, function(x){grepl('read_chunk(.*)', x) & !grepl('unname', x)}))
+filesToCopy1 <- sapply(strsplit(file[m1], split = '"'), function(x) x[2])
+filesToCopy2 <- sapply(strsplit(file[m2], split = '"'), function(x) x[2])
+filesToCopy <- c(filesToCopy1, filesToCopy2)
+for(f in filesToCopy){
+  file_copy(f, paste0(c("../inst/doc/", "../vignettes/"), f), overwrite = TRUE)
+}
+```
+

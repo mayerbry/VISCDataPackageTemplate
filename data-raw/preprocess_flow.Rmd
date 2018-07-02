@@ -1,0 +1,575 @@
+---
+title: "Uberla 465 ICS Processing"
+shorttitle: "Uberla 465 ICS"
+from:
+ - name: Paul Obrecht
+   email: pobrecht@fredhutch.org
+includesummary: yes
+summary:
+  ICS processing for the Uberla 465 study
+---
+
+<!--
+Program Name: preprocess_flow.Rmd
+Creation Date: 8/25/2017
+Full name of author: Paul Obrecht
+Project or Protocol: Uberla 465
+Purpose or description of program: ICS data processing
+Location of program: git@github.fhcrc.org:VIDD-VISC/Uberla465.git
+Location of input data: git@github.fhcrc.org:VIDD-VISC/Uberla465.git, ICS at `/trials/cavd/obj1/cvd465/`
+-->
+
+This report documents the Uberla 465 ICS data processing. We first load FlowWorkspace and its dependencies, and we define input and scratch locations. The raw data is very large (close to 30 GB), and parsing it is time-consuming. So we parse it once and save the parsed data to the local machine in a scatch directory. All subsequent processing can be performed locally on the parsed data, and reprocessing is substantially faster if that parsed data is retained until the package is finalized.
+
+```{r prelim}
+# Run-specific parameters
+parseXML <- FALSE # set to TRUE in order to parse XML from raw files, FALSE otherwise
+runMIMOSA <- TRUE # Run MIMOSA and make response call?
+runCOMPASS <- TRUE # Run COMPASS to create COMPASS object and compute polyfunctionality scores?
+
+PATH <- "/Volumes/trials/cavd/obj1/cvd465" # Location of fcs files on network drive
+kw <- c("Animal ID", "Group", "Stim", "Time Point", "CYTNUM", "User", "Run", "WELL ID", "SETTINGS") # relevant keywords found in XML files
+Stims <- c("FIV-GAG", "SIV-GAG", "HIV-ENV", "RSV-F")
+
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(data.table)
+  }))
+
+# Functions
+sys.source("functions.R", envir=topenv())
+sys.source("qc_functions.R", envir=topenv())
+sys.source('protocol_specific.R', envir=topenv())
+
+# Get protocol name
+pkgName <- roxygen2:::read.description("../DESCRIPTION")$Package
+pkgName1 <- simpleCap(gsub(".", " ", pkgName, fixed=TRUE)) # Remove dots from protocol name
+pkgName1 <- gsub("([[:alpha:]])([[:digit:]])", "\\1 \\2", pkgName1) # space between VDC name and protocol number
+
+# scratch path
+SCRATCH <- file.path("~", "scratch", pkgName)
+
+# Libraries
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(rmarkdown)
+    library(ggplot2)
+    library(devtools)
+    library(xtable)
+    library(flowWorkspace)
+    library(openCyto)
+    library(stringr)
+    library(here)
+    library(tidyverse)
+    library(ggcyto)
+    library(flowIncubator)
+  }))
+
+# Define global vars
+# Ruser <- Sys.getenv("USER") # <---- doesn't work for Paul on Mac
+Ruser <- "pobrecht"
+username <- getUsername(Ruser)
+Rversion <- paste0("R version ", R.version$major, ".", R.version$minor, " (", username, ")")
+
+# create plots directory under vignettes/
+if(!dir.exists(file.path("..", "vignettes", "plots"))){
+  system2(command = "mkdir", args = c("-p", file.path("..", "vignettes", "plots")), wait=TRUE)
+}
+options(xtable.comment = FALSE, datatable.verbose = FALSE, scipen = 10)
+opts_chunk$set(results = "asis", cache = FALSE, echo = TRUE, tidy = TRUE, messages = TRUE, warning = TRUE,
+               dev = c("pdf", "png"), dpi = 300, fig.pos = 'htbp', fig.height = 9, fig.width = 7.5, scipen=0, digits=4)
+```
+
+We now parse the XML files to identify the workspaces, then we select which groups we want to parse from the workspaces. Despite its name, we do not want the group called 'All Samples'; instead, we want the group called 'samples'. However, some workspaces do not have such a group. In that case, we use the group(s) that refer to bottom plates. There may be more than one, in which case we need to process each workspace once for each group we want to extract.
+
+The keywords argument to `parseWorkspace()` requires examining one or more XML files, usually around line 250. Keywords in lower case tend to be the ones added by the experimenter(s).
+
+```{r processXML, eval=parseXML}
+workspaces <- list.files(path = PATH,
+                       pattern = "xml",
+                       full.names = TRUE)
+
+ws <- list()
+for (i in workspaces) {
+  ws[[i]] = openWorkspace(i)
+}
+
+gs <- list()
+for(i in names(ws)){
+  if(any(unique(getSampleGroups(ws[[i]])$groupName) %in% "samples")){
+    if(i == paste0(PATH, "/170719 XE Uberla run 3 RRS.xml") | i == paste0(PATH, "/170727 XE Uberla run 6 RRS.xml")){
+      kw[4] <- "Time point"
+    } else {
+      kw[4] <- "Time Point"
+    }
+    gs[[i]] = parseWorkspace(ws[[i]], name="samples", keywords = kw, keywords.source="XML")
+  } else if (i == paste0(PATH, "/170721 XE Uberla run 5 AN.xml")){
+    subgs <- list()
+    kw[4] <-"Time Point"
+    subgs[[1]] <- parseWorkspace(ws[[i]], name="170721_XE05_AN:96 Well - V bottom_Plate1", keywords = kw, keywords.source="XML")
+    subgs[[2]] <- parseWorkspace(ws[[i]], name="170721_XA04_AN:96 Well - V bottom_Plate2", keywords = kw, keywords.source="XML")
+  }
+}
+kw[4] <- "Time point"
+reruns <- parseWorkspace(ws[[3]], name="reruns", keywords = kw, keywords.source="XML")
+kw[4] <- "Time Point"
+
+# delete temp files if they exist
+if(dir.exists(file.path(SCRATCH, "Uberla_gs"))){
+  unlink(file.path(SCRATCH, "Uberla_gs"), recursive = TRUE, force = TRUE)
+}
+if(dir.exists(file.path(SCRATCH, "Uberla_gs_booleans"))){
+  unlink(file.path(SCRATCH, "Uberla_gs_booleans"), recursive = TRUE, force = TRUE)
+}
+if(dir.exists(file.path(SCRATCH, "Uberla_reruns_gs"))){
+  unlink(file.path(SCRATCH, "Uberla_reruns_gs"), recursive = TRUE, force = TRUE)
+}
+if(dir.exists(file.path(SCRATCH, "Uberla_reruns_gs_booleans"))){
+  unlink(file.path(SCRATCH, "Uberla_reruns_gs_booleans"), recursive = TRUE, force = TRUE)
+}
+```
+
+Now the reruns are checked.
+
+```{r fix_reruns, eval = parseXML}
+
+checkRedundantNodes(reruns)
+il21_gate = getGate(reruns[[1]], "cxcr5/il-21")
+add(reruns[[4]], il21_gate, parent="/singlets/live/cd3/cd4/cm/cxcr5", name="il-21")
+checkRedundantNodes(reruns)
+recompute(reruns)
+
+# update based on the attached document from Kathy.
+pd <- pData(reruns)
+pd["Specimen_001_G12_G12_001.fcs_80643", "Stim"] <- "HIV-Env"
+pd["Specimen_001_G12_G12_001.fcs_80643", "Run"] <- "3"
+pd["Specimen_001_G12_G12_001.fcs_80643", "Time point"] <- "WK 30"
+pd["Specimen_001_G12_G12_001.fcs_80643", "Group"] <- "C"
+pd["Specimen_001_G12_G12_001.fcs_80643", "Animal ID"] <- "2652"
+pd["Specimen_001_G12_G12_001.fcs_80643", "User"] <- "RS"
+colnames(pd)[5] <- "Time Point"
+pData(reruns) <- pd
+```
+
+The reruns will have to be swapped for the samples of Run 3.
+
+```{r bind,, eval = parseXML}
+colnames(pData(gs[[3]]))[5] <- "Time Point"
+colnames(pData(gs[[5]]))[5] <- "Time Point"
+gsls = GatingSetList(c(gs,subgs))
+big_gs = rbind2(gsls)
+```
+
+Then we check that the marker names are all consistent. These will need to be updated if not consistent. Otherwise `getSingleCellExpression()` will fail.
+
+```{r standardize_and_save, eval = parseXML}
+all_sample_markers=list()
+for(i in sampleNames(big_gs)){
+  all_sample_markers[[i]] = markernames(big_gs@data[i])
+}
+
+new_markernames <- parameters(big_gs@data[[1]])@data$desc
+channelnames <- parameters(big_gs@data[[1]])@data$name
+names(new_markernames) <- channelnames
+new_markernames <- na.omit(new_markernames)
+attr(new_markernames, "na.action") = NULL
+
+markernames(big_gs) <- new_markernames
+markernames(reruns) <- new_markernames
+
+# identify samples that were rerun
+toRemove <- pData(reruns)[, c("Animal ID", "Time Point", "Stim")]
+
+# what are the sample indices of these samples in big_gs?
+pd <- pData(big_gs)
+pd$name2 <- rownames(pd)
+toRemove <- merge(toRemove, pd, by = c("Animal ID", "Time Point", "Stim"), all.x = TRUE)
+tR <- toRemove$name2
+tRvec <- pd$name2 %in% tR
+
+# combine gatings sets into a single gating set, removing those initial runs from big_gs
+gs <- GatingSetList(list(big_gs[!tRvec], reruns))
+gs <- rbind2(gs)
+
+save_gs(gs, path <- file.path(SCRATCH, "Uberla_gs"), cdf = "link")
+rm(list=c("big_gs", "reruns"))
+```
+
+
+```{r 'gating_hierarchy', eval = parseXML}
+nodes <- getNodes(gs)
+print(nodes)
+png(filename="../vignettes/plots/gating_hierarchy_gs.png")
+plot(gs)
+dev.off()
+```
+
+Next we add the boolean gates. The updated GatingSet containing booleans is also saved to the scratch directory.
+
+```{r BooleanGating, eval=parseXML}
+gs <- load_gs(path=file.path(SCRATCH, "Uberla_gs"))
+
+# Boolean gating
+# Next we need to add the boolean gates beneath the total memory populations.
+gatingargs <- function(gatingset, tsub){
+  nodes <- getNodes(gatingset)
+  x <- gsub("/singlets/live/cd3/", "", nodes[grepl("totm/", nodes, fixed=TRUE)])
+   x1 <- x[grepl(tsub, x)]
+   x1 <- paste(x1, collapse=":")
+   print(x1)
+   return(x1)
+}
+
+cd4gatingargs <- gatingargs(gs, "cd4")
+cd8gatingargs <- gatingargs(gs, "cd8")
+openCyto:::add_pop(gs, gating_method = "polyFunctions", parent = "cd4/totm", gating_args = cd4gatingargs)
+openCyto:::add_pop(gs, gating_method = "polyFunctions", parent = "cd8/totm", gating_args = cd8gatingargs)
+
+# Save
+save_gs(gs, path=file.path(SCRATCH, "Uberla_gs_booleans"), cdf = "link")
+```
+
+We now extract the ICS data and computed derived variables.
+
+```{r extractICS}
+# Population statistics
+gs <- load_gs(path=file.path(SCRATCH, "Uberla_gs_booleans"))
+
+# We extract the population statistics
+ICS_stats <- getPopStats(gs, path="full", bool=TRUE)
+ICS_stats[, HierarchyLevel := str_count(Population, "/")]
+
+# merge with pdata
+pd <- pData(gs)
+pd$name <- rownames(pd)
+ICS_stats <- merge(ICS_stats, pd, by="name")
+ICS_stats[, Population := gsub("/singlets/live/cd3/", "", Population)]
+ICS_stats[, Population := gsub("/singlets/live/", "", Population)]
+ICS_stats[, Population := gsub("/singlets/", "", Population)]
+ICS_stats[, Population := gsub("/singlets", "singlets", Population)]
+ICS_stats[, Parent := gsub("/singlets/live/cd3/", "", Parent)]
+ICS_stats[, Parent := gsub("/singlets/live/", "", Parent)]
+ICS_stats[, Parent := gsub("/singlets/", "", Parent)]
+ICS_stats[, Parent := gsub("/singlets", "singlets", Parent)]
+ICS_stats[, Population := gsub(paste0(Parent, "/"), "", Population), .(name, Parent)]
+ICS_stats[, Population := gsub("IL-", "IL", gsub("IFN-G", "IFNg", toupper(Population)))]
+ICS_stats[, Population := gsub("IL17", "IL17A", Population, fixed=TRUE)]
+ICS_stats[, Parent := gsub("IL-", "IL", gsub("IFN-G", "IFNg", toupper(Parent)))]
+ICS_stats[, Parent := toupper(Parent)]
+
+# Standardize data values
+ICS_stats[, `:=`(Stim = ifelse(Stim==ICS_control, Stim, toupper(Stim)),
+                 obstype = ifelse(grepl(":", Population, fixed=TRUE), "Boolean",
+                                  ifelse(grepl("TOTM", Parent) | Parent == "CD4/CM/CXCR5", "Provided Marginal", "Hierarchical Subset")))]
+
+# Parse Booleans
+ICS_stats[, tmp := gsub(":", "", gsub(gsub("/", ":", Parent, fixed=TRUE), "", Population, fixed=TRUE), fixed=TRUE), by = .(name, Parent)]
+
+tmp <- strsplit(ICS_stats$tmp, "&")
+tmp2 <- sapply(tmp, function(x){if(length(x)>1){
+  paste(gsub("!", "", gsub("TRUE", "+", gsub("FALSE", "-", paste0(x, !grepl("!", x, fixed=TRUE)), fixed=TRUE), fixed=TRUE), fixed=TRUE), collapse="")
+  } else {x}})
+ICS_stats[, `:=`(tmp = NULL, Population = ifelse(tmp2=="NULL", Population, tmp2))]
+
+# viability
+ICS_stats[,
+          `:=`(CellsAcquired = ParentCount[Population == "SINGLETS"],
+               Viability = 100 * Count[Population %in% "LIVE"]/ParentCount[Population %in% "LIVE"]),
+          by = name]
+
+# Viability -- Cutpoint specified in protocol_specific.R
+ICS_stats <- ICS_stats[, ViabilityCut := ifelse(Viability < Vpctcut | CellsAcquired < Vrawcut, 'Not Viable', 'Viable')]
+
+# Recompute Marginals from Booleans
+ComputedMarginal <- rbindlist(lapply(c("IFNg", "IL2", "IL4", "IL5", "IL13", "IL17A", "IL21"), function(x) {
+  ICS_stats[Population %like% paste0(x, "\\+") & obstype=="Boolean",
+            .(Population = x, Count = sum(Count, na.rm=TRUE), obstype = "Computed Marginal", HierarchyLevel = unique(HierarchyLevel),
+              ParentCount = unique(ParentCount), CellsAcquired = unique(CellsAcquired),
+              Viability = unique(Viability), ViabilityCut = unique(ViabilityCut)),
+            by = c("name", "Parent", kw)]}))
+
+IFNgOrIL2rows <- which(grepl("IFNg+", ICS_stats$Population, fixed=TRUE) | grepl("IL2+", ICS_stats$Population, fixed=TRUE))
+AnyTh2rows <- which(grepl("IL4+", ICS_stats$Population, fixed=TRUE) |
+                    grepl("IL5+", ICS_stats$Population, fixed=TRUE) |
+                    grepl("IL13+", ICS_stats$Population, fixed=TRUE))
+
+IFNgOrIL2 <- ICS_stats[IFNgOrIL2rows,
+                       .(Population = "IFNg Or IL2", Count = sum(Count, na.rm=TRUE), obstype = "Computed Joint Marginal",
+                         HierarchyLevel = unique(HierarchyLevel), ParentCount = unique(ParentCount),
+                         CellsAcquired = unique(CellsAcquired), Viability = unique(Viability), ViabilityCut = unique(ViabilityCut)),
+                       by = c("name", "Parent", kw)]
+
+AnyTh2 <- ICS_stats[AnyTh2rows,
+                    .(Population = "IL4 Or IL5 Or IL13", Count = sum(Count, na.rm=TRUE), obstype = "Computed Joint Marginal",
+                      HierarchyLevel = unique(HierarchyLevel), ParentCount = unique(ParentCount),
+                      CellsAcquired = unique(CellsAcquired), Viability = unique(Viability), ViabilityCut = unique(ViabilityCut)),
+                       by = c("name", "Parent", kw)]
+
+ICS_stats <- rbindlist(list(ICS_stats, ComputedMarginal, IFNgOrIL2, AnyTh2), fill=TRUE, use.names=TRUE)
+print(ICS_stats[, .N, obstype])
+
+j <- dcast.data.table(ICS_stats[obstype %in% c("Provided Marginal", "Computed Marginal")],
+           name + Population + Parent + `Animal ID` + `Time Point` + Stim ~ obstype,
+           value.var="Count")[!is.na(`Computed Marginal`) & `Computed Marginal` != `Provided Marginal`]
+
+cat("Table of differences between Provided Marginal counts and Computed Marginal Counts\n")
+print(j[, .N, .(`Provided Marginal`, `Computed Marginal`)])
+
+cat("Discarding Provided Marginals\n")
+ICS_stats <- ICS_stats[obstype != "Provided Marginal" | Parent == "CD4/CM/CXCR5"]
+
+print(dcast(ICS_stats[, .N, .(Stim, Parent, Population, Run)], Parent + Population + Run ~ Stim, value.var="N"), nrow=200)
+
+# background viability
+ICS_stats[,
+          `:=`(CountBG = Count[Stim %like% ICS_control],
+               ParentCountBG = ParentCount[Stim %like% ICS_control],
+               ViabilityBG = Viability[Stim %like% ICS_control],
+               CellsAcquiredBG = CellsAcquired[Stim %like% ICS_control],
+               ViabilityCutBG = ViabilityCut[Stim %like% ICS_control]),
+          by = .(`Animal ID`, Population, Parent, `Time Point`, obstype, Run)]
+
+# Compute proportions
+ICS_stats[, `:=`(PercentCell = Count/ParentCount * 100,
+                 PercentCellNet = (Count/ParentCount - CountBG/ParentCountBG)* 100)]
+
+# fix names
+setnames(ICS_stats, c("Animal ID", "name", "Time Point"), c("AnimalID", "Name", "Week"))
+```
+
+Compute p-values with `fisher.test()` and adjust using `p.adjust()`.
+
+```{r fisher}
+# Fisher's test of positive/negative counts for antigen vs. COSTIM
+ppop <- ICS_stats[!is.na(CountBG) &  paste0(Parent, "/", Population) %in% pops_of_interest &
+                    Stim %in% unique(Stim[Stim != ICS_control])  & ViabilityCut == 'Viable' & ViabilityCutBG == 'Viable', which = TRUE]
+
+ICS_stats[ppop,
+          response_P := fisher.test(matrix(c(Count, CountBG, ParentCount - Count, ParentCountBG - CountBG), nrow = 2),
+                                    alternative = 'greater')$p.value,
+          by = .(AnimalID, Stim, Population, Parent, Week)]
+
+# Doing Adjustment on Only Viable Values
+ICS_stats[ppop,
+          response_fdr_P := p.adjust(response_P, method = 'fdr'),
+          by = .(Stim, Population, Parent, Week)]
+```
+
+We now run MIMOSA to estimate responses.
+
+```{r MIMOSA, eval = runMIMOSA}
+# MIMOSA probabilities
+library(MIMOSA)
+
+wks <- unique(sort(ICS_stats$Week))
+sts <- setdiff(unique(sort(ICS_stats$Stim)), ICS_control)
+cyts <- unlist(unique(ICS_stats[obstype %in% c("Provided Marginal", "Computed Marginal", "Computed Joint Marginal") &
+                                  (Population %like% "IL" | Population %like% "IFNg")][, .(paste0(Parent, "/", Population))]))
+
+for(wk in wks){
+  for(st in sts){
+    for(cyt in cyts){
+      cat(wk, st, cyt, "\n")
+      tmp <- ICS_stats[Stim %in% c(ICS_control, st) & Week==wk & paste0(Parent, "/", Population)==cyt &
+                         ViabilityCut=="Viable" & ViabilityCutBG=="Viable"]
+      if(length(unique(tmp$Stim))>1){
+        
+        tmpOut <- get_MIMOSA_probs_fun(data_in = tmp, ref_antigen_in = ICS_control)
+        if(exists("MIMOSA_results")){
+          MIMOSA_results <- rbindlist(list(MIMOSA_results,
+                                           tmpOut$Results[, `:=`(Week = wk, Stim = st, Seed = tmpOut$seed_used)]))
+        } else {
+          MIMOSA_results <- tmpOut$Results[, `:=`(Week = wk, Stim = st, Seed = tmpOut$seed_used)]
+        }
+      }
+    }
+  }
+}
+
+setkey(ICS_stats, AnimalID, Stim, Week, Population, Parent)
+setkey(MIMOSA_results, AnimalID, Stim, Week, Population, Parent)
+ICS_stats <- merge(ICS_stats, MIMOSA_results, all.x=TRUE)
+ICS_stats[, response := ifelse(MIMOSA_fdr_P < 0.01, 1, 0)]
+
+# convert factors to character
+ICS_stats <- setDT(lapply(ICS_stats, function(x){if(class(x)=="factor"){x <- as.character(x)} else {x <- x}}))
+
+# sort for output
+setkey(ICS_stats, AnimalID, Stim, Week, obstype, HierarchyLevel, Parent, Population)
+
+# Output for Package
+saveObj("ICS_stats", "ICS_data")
+```
+
+We now run COMPASS.
+
+```{r COMPASS, eval = runCOMPASS}
+# COMPASS CONTAINER
+
+gs <- load_gs(path=file.path(SCRATCH, "Uberla_gs_booleans"))
+
+# Construct a COMPASS container from single cell gene expression.
+# Some markers have inconsistent marker names.
+# Method to update markernames
+library(COMPASS)
+
+setGeneric("markernames<-", def = function(object, value, ...){standardGeneric("markernames<-")})
+setMethod("markernames<-", signature = c("flowFrame", "character"), definition = function (object, value, ...)
+{
+  .local <- function (object, value,...)
+  {
+    m <- as.vector(object@parameters$desc)
+    ind <- grepl("time|fsc|ssc", object@parameters$name,
+                 ignore.case = TRUE)
+    m <- m[!ind]
+    m[!is.na(m)]
+    if(length(m[!is.na(m)])==length(value)){
+      object@parameters$desc[!ind][!is.na(m)] <- value
+    }else if(length(m)==length(value)){
+      object@parameters$desc[!ind] <- value
+    }
+    object
+  }
+  .local(object, value, ...)
+})
+
+# Need to fix markernames first, as they are not consistent
+newmarkers <- gsub("-", "", str_split_fixed(markernames(flowData(gs)[[1, use.exprs=FALSE]]), " ", 2)[, 1])
+
+fd <- flowData(gs)
+for(i in sampleNames(gs)){
+  fr <- fd[[i, use.exprs=FALSE]]
+  markernames(fr) <- newmarkers
+  fd@frames[[i]] <- fr
+}
+flowData(gs) <- fd
+
+sc <- getSingleCellExpression(gs,
+                              nodes = c("cd4/totm/ifn-g",
+                                        "cd4/totm/il-2",
+                                        "cd4/totm/il-4",
+                                        "cd4/totm/il-5",
+                                        "cd4/totm/il-13",
+                                        "cd4/totm/il-17",
+                                        "cd4/totm/il-21"),
+                              map = list("cd4/totm/ifn-g" = "IFNg",
+                                         "cd4/totm/il-2"  = "IL2",
+                                         "cd4/totm/il-4"  = "IL4",
+                                         "cd4/totm/il-5"  = "IL5",
+                                         "cd4/totm/il-13" = "IL13",
+                                         "cd4/totm/il-17" = "IL17A",
+                                         "cd4/totm/il-21" = "IL21"))
+
+totals <- getPopStats(gs, subpopulations = "cd4/totm")[, Count]
+names(totals) <- getPopStats(gs, subpopulations = "cd4/totm")[, name]
+meta <- pData(gs)
+meta$name <- rownames(meta)
+meta$Stim <- toupper(meta$Stim)
+
+# Construct a COMPASSContainer
+ICS_COMPASS <- COMPASSContainer(data = sc, counts = totals, meta = meta, individual_id = "Animal ID", sample_id = "name")
+
+# Combining ID and Time Together for COMPASS Run
+ICS_COMPASS$meta$ID_Time <- paste0(ICS_COMPASS$meta$`Animal ID`, '_', ICS_COMPASS$meta$`Time Point`)
+
+# Setting the new individual_id
+ICS_COMPASS$individual_id <- 'ID_Time'
+
+# Filter non-viable samples
+ics2 <- copy(ICS_stats)
+nonViable <- ics2[ViabilityCut != "Viable" | ViabilityCutBG != "Viable", which=TRUE]
+assign("nonViable", ics2[nonViable, .N, .(ID_time = paste0(AnimalID, "_", Week))]$ID_time, envir=.GlobalEnv)
+
+# Output for Package
+saveObj("ICS_COMPASS", "CompassContainer")
+
+# COMPASS run 1: 7 marker run excluding timepoints with problematic IL2
+# loop through stim values, one compass run per stim per tissue
+scores <- data.table()
+fits <- list()
+
+# loop through stim values, one compass run per stim
+for(st in Stims){
+  assign("thisStimF", st, envir = .GlobalEnv)
+  set.seed(93457653)
+
+  # compute fit
+  tmp_fit <- COMPASS(data = ICS_COMPASS,
+                     treatment = Stim == .GlobalEnv$thisStimF,
+                     control = Stim == 'COSTIM',
+                     subset = ! ID_Time %in% .GlobalEnv$nonViable,
+                     iterations = COMPASS_iterations)
+
+  # functionality and polyfunctionality scores
+  FS <- FunctionalityScore(tmp_fit)
+  PFS <- PolyfunctionalityScore(tmp_fit)
+  tmp_scores <- data.table(ID_Time = names(FS),
+                           FS,
+                           PFS,
+                           Stim = paste(.GlobalEnv$thisStimF, "(CD4+)"))
+  
+  tmp_scores <- merge(setDT(tmp_fit$data$meta)[, .(ID_Time, `Animal ID`, `Time Point`, Group)],
+                      tmp_scores, by = "ID_Time")
+  
+  # append this scores dataset to the master scores dataset
+  scores <- rbindlist(list(scores, tmp_scores), use.names = TRUE, fill = TRUE)
+
+  # save the stim- and tissue-specific fit stats to permanent dataset
+  fits[[st]] <- tmp_fit
+}
+
+# Output for Package
+saveObj("scores", "ICS_scores")
+saveObj("fits", "ICS_fits")
+```
+
+```{r PLOTS, eval=FALSE}
+# Create plots for samples with high cell counts
+
+# get samples having abnormally high counts
+samples <- unique(ICS_stats[Count>500 & Parent == "CD4/TOTM" & obstype %like% "Marginal"]$Name)
+
+gs <- load_gs(path=file.path(SCRATCH, "Uberla_gs_booleans"))
+
+# standardize case of Stim in gating set hierarchy
+pd <- pData(gs)
+pd$Stim <- ifelse(pd$Stim=="COSTIM", pd$Stim, toupper(pd$Stim))
+pData(gs) <- pd
+
+pd$name <- rownames(pd)
+pd <- setnames(setDT(pd)[, `:=`(Stim = ifelse(Stim=="COSTIM", Stim, toupper(Stim)))], "Animal ID", "AnimalID")
+
+highCounts <- pd[name %in% samples]
+highCountsBG <- merge(copy(highCounts)[, c("Stim", "name") := NULL], pd[Stim==ICS_control, .(AnimalID, `Time Point`, Run, Stim, name)], by=c("AnimalID", "Time Point", "Run"))
+highCountsBG <- highCountsBG[!duplicated(highCountsBG)]
+sample_list <- rbindlist(list(highCounts, highCountsBG), use.names=TRUE, fill=TRUE)
+
+sample_map <- sample_list[, .(AnimalID, `Time Point`, Stim, id=interaction(AnimalID, `Time Point`), name)]
+sample_map <- setkey(sample_map[!duplicated(sample_map)], id)
+sample_map2 <- lapply(unique(sample_map$id), function(x){c(sample_map[id==x]$name)})
+
+nodesToPlot <- c("/singlets/live/cd3/cd4/totm/ifn-g", "/singlets/live/cd3/cd4/totm/il-2")
+
+quartz()
+
+for(i in sample_map2){
+  for(node in nodesToPlot){
+    sp <- strsplit(node, "/")[[1]]
+    fn <- gsub("\\.fcs_[0-9]*", "", paste0(gsub("Specimen_", "", i), "-", paste(sp[5:length(sp)], collapse="."), ".png"))
+    png(paste0("../vignettes/plots/", fn))
+    print(plotGate(gs[i], node, cond="Stim + `Time Point` + `Animal ID`", path = "auto",
+                   marker.only=TRUE, overlay=c("cd4/totm/il-2","cd4/totm/ifn-g"),
+                   par.settings = list(overlay.symbol = list(cex = 0.4)), xbin=128, margin=FALSE, main = node))
+    dev.off()
+  }
+}
+```
+
+```{r external-code}
+read_chunk('reproducibility.R')
+```
+
+```{r repro, echo=FALSE, eval=TRUE}
+<<reprotab>>
+```

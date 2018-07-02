@@ -1,0 +1,428 @@
+---
+title: "<Protocol name> BAMA Processing"
+shorttitle: "<Protocol name> BAMA"
+from:
+ - name: Your Name
+   email: <your_id>@fredhutch.org
+summary: 
+  BAMA processing for the <Protocol name> study 
+---
+
+<!--
+Program Name: preprocess_bama.Rmd
+Creation Date: 1/1/2010
+Full name of author: Your name
+Project or Protocol: <Protocol name>
+Purpose or description of program: BAMA data processing
+Location of program: git@github.com:FredHutch/<repo name>.git
+Location of input data: git@github.com:FredHutch/<repo_name>.git
+-->
+
+This report documents the <Protocol name> BAMA data processing.
+
+# Preliminaries
+We first source our external functions and global variables, load libraries, and set options.
+
+```{r 'prelim'}
+# Libraries
+suppressPackageStartupMessages({
+  library(knitr)
+  library(data.table)
+  library(xtable)
+  library(kableExtra)
+})
+
+# Functions
+sys.source("functions.R"), envir=topenv())
+sys.source("qc_functions.R"), envir=topenv())
+sys.source("protocol_specific.R"), envir=topenv())
+
+options(xtable.comment = FALSE, datatable.verbose = FALSE, scipen = 10)
+opts_chunk$set(results = "asis", cache = FALSE, echo = TRUE, tidy = TRUE, messages = TRUE, warning = TRUE,
+               dev = c("pdf", "png"), dpi = 300, fig.pos = 'htbp', fig.height = 9, fig.width = 7.5, scipen=0, digits=4)
+```
+
+# Initial filtering
+Next we read in the qdata, rename `auc` to `auc_atlas`, create a separate standards dataset, and filter the bama data down to unaveraged sample records.
+
+```{r 'read_data'}
+bama <- rbindlist(lapply(bama_qfilenames,
+                         function(x){fread(paste0("../inst/extdata/", x))[, sourcefile := x]}),
+                  use.names=TRUE, fill=TRUE)
+
+aucVar <- names(bama)[tolower(names(bama)) %like% "auc"]
+setnames(bama, aucVar, "auc_atlas")
+
+bama_unmod <- bama # save data before manipulations
+
+# separate unknowns from standards
+standard <- bama[specrole=="Standard" & averaged=='false']
+
+# in unknowns, take unaveraged records and standardize all gp70 blanks to "gp70 control" (sometimes they're mixed)
+bama <- bama[ptid != "" & !grepl("detection", tolower(ptid)) &
+						 specrole == "Unknown" &
+						 averaged=="false"][, antigen := ifelse(tolower(antigen) %in% blanklist[["gp70"]], "gp70 control", antigen)]
+```
+
+## Summaries
+Some summaries of the unaveraged data follow.
+
+```{r 'summaries'}
+summary <- bama[, .N, .(spec_primary, isotype, antigen, ptid, visitno, dilution)]
+kableit(setkey(summary[, .(N=sum(N)), .(ptid, spec_primary, isotype)], ptid), caption="Table of ptids in unaveraged data")
+
+tmp <- dcast.data.table(summary, visitno + spec_primary + isotype ~ dilution, value.var="N", fun.aggregate = sum)
+setkey(tmp, visitno)
+kableit(tmp, caption="Table of dilution by visitno in unaveraged data")
+
+preAvg <- dcast.data.table(summary[dilution==binding_dil], antigen + spec_primary + isotype ~ visitno, value.var="N", fun.aggregate = sum)
+setkey(preAvg, antigen)
+kableit(preAvg, caption="Table of visitno by antigen (direct binding dilution only) in unaveraged data")
+
+tmp <- bama[, .N, .(antigen, pos_threshold)]
+kableit(tmp, caption="Table of positive threshold by antigen")
+
+tmp <- summary[, .(twoDups = (N == 2)),
+				.(isotype, antigen, ptid, visitno, dilution)][twoDups==FALSE, .N,
+																											.(isotype, antigen, dilution)]
+if(nrow(tmp)>0){
+  kableit(tmp, caption="Cases with # replicates other than 2 in unaveraged data")
+}
+```
+
+# Averaging Replicates
+We next average replicates. The averaged values of interest are `fi` and `fi_bkgd`. We also compute `stddev` as the standard deviation of the `fi` variable across replicates. `well_id` and `bead_count` for the two replicates are combined and separated by a comma. The replicate averaging produces a single row for each combination of spec_primary, isotype, ptid, visitno, and antigen. But in order to keep all the input variables in the dataset, the by-statement in the averaging operation is programmatically set.
+
+```{r 'average'}
+# average replicates
+byvars <- setdiff(names(bama),
+                        c("fi", "fi_bkgd", "fi_bkgd_blank", "well_id", "bead_count", "replicate",
+                        	"conc", "EC50", "pos_fold", "baseline_visit", "pos_call", "stddev",
+                          "obsconc", "obsconcmodifier"))
+
+bama <- bama[,
+						 .(fi=mean(as.numeric(fi), na.rm=TRUE),
+						   fi_bkgd=mean(as.numeric(fi_bkgd), na.rm=TRUE),
+							 stddev=sd(as.numeric(fi), na.rm=TRUE),
+						 	 well_id=paste0(well_id, collapse=", "),
+						 	 bead_count=paste0(bead_count, collapse=", "),
+						 	 n_repl=.N),
+						 by=byvars]
+
+kableit(bama[, .N, n_repl], caption="Summary of number of replicates in averaged data") # there should be exactly 2 replicates. This identifies deviations from that.
+```
+
+# Blank Matching
+Next is blank-matching. The `antigenMatch()` function uses the `blanklist` object defined in `protocol_specific.R` to map antigens to the correct reference antigen (either MulV or blank bead). We separate out the reference antigen records and merge them to the experimental antigen records by `spec_primary`, `isotype`, `dilution`, `ptid`, `visitno`, `sourcefile`, `type`, `notebook`, `filename`, `well_id`, and `refAntigen`.
+
+```{r 'blank_matching'}
+# pull out blanks as rows, add blank columns
+antigenMatch <- function(x){
+  alist <- setdiff(tolower(unique(bama$antigen)), tolower(unlist(blanklist)))
+  if(x == "blank"){
+    setdiff(alist, unlist(lapply(names(blanklist)[names(blanklist) != "blank"], antigenMatch)))
+  } else {
+    alist[grepl(x, alist)]
+  }
+}
+aMatch <- sapply(names(blanklist), antigenMatch) # names of aMatch are same as names of blanklist (defined in protocol_specific.R)
+
+for(a in names(aMatch)){
+  bama[tolower(bama$antigen) %in% aMatch[[a]], refAntigen := blanklist[[a]][1]]
+}
+
+tmp <- bama[!tolower(bama$antigen) %in% unlist(blanklist), .N, .(antigen, refAntigen)]
+tmp <- dcast(tmp, antigen ~ refAntigen, value.var="N")
+kableit(tmp, align="lrr", caption="Frequency of antigens and corresponding blanks")
+
+blank <- bama[tolower(antigen) %in% unlist(blanklist)]
+blank[, refAntigen := tolower(antigen)]
+old <- c("fi_bkgd", "fi", "n_repl")
+new <- c("fi_bkgd_blank", "fi_blank", "n_repl_blank")
+setnames(blank, old, new)
+
+byvars <- c("spec_primary", "isotype", "dilution", "ptid", "visitno", "sourcefile", "type", "notebook", "filename", "well_id", "refAntigen")
+
+setkeyv(bama, byvars)
+setkeyv(blank, byvars)
+
+bama <- merge(bama[!tolower(antigen) %in% unlist(blanklist)], blank[, c(byvars, new), with=FALSE], all=TRUE)
+
+tmp <- bama[is.na(fi_bkgd)]
+if(nrow(tmp)>0){
+  kableit(dcast(tmp, spec_primary + isotype + dilution + visitno ~ ptid, value.var = "fi_bkgd_blank", fun.aggregate = length), caption="Unmatched Blanks")
+}
+
+tmp <- bama[is.na(fi_bkgd_blank)]
+if(nrow(tmp)>0){
+  kableit(dcast(tmp, spec_primary + isotype + dilution + visitno ~ ptid, value.var = "fi_bkgd_blank", fun.aggregate = length), caption="Unmatched Antigens")
+}
+
+# discard unmatched blanks
+bama <- bama[!is.na(fi_bkgd)]
+
+# should we run loose matching? allowNonRunMatchedBlanks is defined in protocol_specific.R
+runloose <- allowNonRunMatchedBlanks & nrow(bama[is.na(fi_bkgd_blank)]) > 0
+```
+
+```{r 'blank_matching_loose', eval=runloose, echo=runloose}
+# looser blank matching, if called for
+bama2 <- bama[is.na(fi_bkgd_blank)][, .(spec_primary, isotype, dilution, ptid, visitno, refAntigen)]
+
+bama2 <- bama2[!duplicated(bama2)]
+setkey(blank, spec_primary, isotype, dilution, ptid, visitno, refAntigen)
+blank2 <- blank[blank[bama2, which=TRUE]]
+
+kableit(dcast(blank2, isotype + ptid + dilution + visitno + refAntigen ~ notebook, value.var="fi_bkgd_blank"),
+        caption="Blank fi_bkgd values corresponding to antigens without run-matched blanks")
+
+bama2 <- setkey(bama[is.na(fi_bkgd_blank)],
+                isotype, dilution, ptid, visitno, sourcefile, refAntigen)
+
+blank2 <- blank2[, .(fi_bkgd_blank=mean(fi_bkgd_blank, na.rm=TRUE),
+                     fi_blank=mean(fi_blank, na.rm=TRUE),
+                     n_repl_blank=2*.N),
+                 by = .(isotype, dilution, ptid, visitno, sourcefile, refAntigen)]
+
+setkey(blank2, isotype, dilution, ptid, visitno, sourcefile, refAntigen)
+
+bama2 <- merge(bama2[, c("fi_bkgd_blank", "fi_blank", "n_repl_blank") := NULL],
+               blank2[, .(isotype, dilution, ptid, visitno, sourcefile, refAntigen, fi_bkgd_blank, fi_blank, n_repl_blank)],
+               all.x=TRUE)[, blankMatchFlag := "Non-run-matched"]
+
+bama <- rbindlist(list(bama[!is.na(fi_bkgd_blank)], bama2), use.names=TRUE, fill=TRUE)
+```
+
+# Baseline Matching
+`baseline_visit` is defined in protocol_specific.R. The baseline visit is maintained in the dataset as a row, but new columns `fi_bkgd_baseline`, `fi_bkgd_blank_baseline`, as well as the corresponding `n_repl` variables are added as columns.
+
+```{r 'baselines'}
+# pull out baseline records, add baseline columns
+baseline <- bama[visitno == baseline_visit]
+old <- c("fi_bkgd", "fi_bkgd_blank", "n_repl", "n_repl_blank")
+new <- c("fi_bkgd_baseline", "fi_bkgd_blank_baseline", "n_repl_baseline", "n_repl_blank_baseline")
+setnames(baseline, old, new)
+
+byvars <- c("ptid", "antigen", "spec_primary", "isotype", "dilution")
+
+# match followup to baseline in the same qdata file
+setkeyv(bama, byvars)
+setkeyv(baseline, byvars)
+bama <- merge(bama, baseline[, c(byvars, new), with=FALSE], all.x=TRUE)
+
+# distribution of missing values
+tmp <- setkey(
+  bama[, .(missing_blanks=sum(is.na(fi_bkgd_blank)), missing_baselines=sum(is.na(fi_bkgd_baseline))),
+       by=c("spec_primary", "isotype", "visitno", "dilution")],
+  spec_primary, isotype, visitno)
+kableit(tmp, caption="Distribution of Missing Values (Often >0 for non-screening dilutions")
+```
+
+```{r 'what_do_we_run', echo=FALSE, eval=TRUE}
+runrx <- ifelse(exists("rx"), TRUE, FALSE) # merge in rx data and csv is present?
+runarp <- ifelse(exists("arp"), TRUE, FALSE) # merge in arp data and csv is present?
+runtitrations <- length(unique(bama[spec_primary=="BLD" & isotype %like% "IgG"]$dilution)) > 1
+runstandard <- exists("standard")
+```
+
+```{r 'rx', eval=runrx, echo=runrx}
+cat("# Treatment Assignment\nTreatment assignment information is merged in.\n")
+# merge in treatment info
+setkey(bama, ptid)
+bama <- merge(bama, rx, all.x=TRUE)
+```
+
+```{r 'arp', eval=runarp, echo=runarp}
+cat("# ARP\nARP panel information is merged in.\n")
+# merge in ARP/clade information
+setkey(bama, antigen)
+bama <- merge(bama, arp, all.x=TRUE)
+bama[is.na(ARP_panel), ARP_panel := ""]
+bama[is.na(in_ARP_panel), in_ARP_panel := "N"]
+```
+
+# Delta
+We next compute `delta` and `delta_baseline` and filter the data. The variable `filter_reason` contains the reason(s) a particular record is filtered, or "Not Filtered" if it meets all criteria.
+
+```{r 'serum_delta'}
+# now subset serum for different cutoff/positivity logic
+ser <- bama[spec_primary == "BLD"]
+
+# serum delta
+ser[, `:=`(delta = fi_bkgd - pmax(0, fi_bkgd_blank),
+           delta_baseline = fi_bkgd_baseline - pmax(0, fi_bkgd_blank_baseline))]
+
+tmp <- ser[is.na(delta_baseline) & dilution==binding_dil]
+if(nrow(tmp)>0){
+  kableit(tmp1, caption="Observations with missing delta_baseline")
+}
+
+# filter serum
+ser[dilution == binding_dil,
+    filter_reason := addQCind(ser[dilution == binding_dil], baseline_visit)]
+
+# are there high baselines?
+highbaselines <- ser[delta_baseline > 5000]
+runhighbaselines <- ifelse(nrow(highbaselines)>0, TRUE, FALSE)
+```
+
+```{r 'high-baseline_kable', eval=runhighbaselines}
+kableit(ser[delta_baseline > 5000 & dilution==binding_dil, .(spec_primary, isotype, ptid, visitno, antigen, dilution, fi, fi_bkgd, fi_bkgd_blank, delta, delta_baseline, sourcefile)],
+        caption="The lab has asked to be informed of any cases where baseline $\\mathrm{MFI}^* > 5000$ so that they may consider whether to filter them. This table presents all such cases in this dataset.", format="latex") # need latex format so the LaTeX in the caption renders correctly.
+```
+
+Next, the positivity cutoffs are checked. Depending on the values of `infillPosThreshold` and `derivePosThreshold` set in `protocol_specific.R`, we either infill missing values of the cutoffs, or we derive the cutoffs as the 95th percentile of the $\mathrm{MFI}^*$ of the unfiltered baseline samples by `spec_primary`, `isotype`, and `antigen`.
+
+```{r 'cutoffs1', eval=infillPosThreshold, echo=infillPosThreshold}
+# infill pos_threshold values
+cat("In this protocol, cutoffs are infilled from populated values in the qdata file.\nThis is not the standard approach.")
+cutoffs <- unique(ser[!is.na(pos_threshold), .(spec_primary, isotype, antigen, pos_threshold)])
+if(nrow(cutoffs[!is.na(pos_threshold)]) == length(unique(ser$antigen)) & !anyNA(cutoffs$pos_threshold)){
+  setkey(cutoffs, spec_primary, isotype, antigen)
+  setkey(ser, spec_primary, isotype, antigen)
+  ser <- merge(ser[, pos_threshold := NULL], cutoffs, all.x=TRUE)
+} else {
+  warning("There is not an unambiguous 1:1 mapping of antigen <-> pos_threshold. No infilling performed.")
+  kableit(cutoffs)
+}
+```
+
+```{r 'cutoffs2', eval=derivePosThreshold, echo=derivePosThreshold}
+# compute pos_threshold values
+cat("In this protocol, cutoffs are computed from the 95th percentile of the non-filtered baseline records.\nThis is the standard approach.")
+ser[, pos_threshold_lab := pos_threshold][, pos_threshold := NULL] # preserve original values in dataset
+ser[, # use only original 
+    pos_threshold := as.integer(max(100,
+                                    floor(quantile(delta[visitno==baseline_visit &
+                                                         tolower(filter_reason) == "not filtered"],
+                                                   probs = 0.95, na.rm=TRUE)))),
+    by = .(isotype, antigen)]
+kableit(ser, .N, .(isotype, antigen, pos_threshold)], caption = "Deritived positivity cutoffs (95th percentile of unfiltered baseline deltas")
+```
+
+```{r 'auc', eval=runtitrations, echo=runtitrations}
+cat("The AUTC (area under the titration curve) is computed.\n")
+byvars <- c("spec_primary", "isotype", "ptid", "visitno", "antigen")
+setkeyv(ser, c(byvars, "dilution"))
+
+excl <- ser[dilution == binding_dil & tolower(filter_reason) != "not filtered"]
+excl <- interaction(excl$ptid, excl$antigen)
+auc <- ser[!interaction(ptid, antigen) %in% excl,
+           .(auc_scharp = GenerateAUC(log10(dilution), delta)), by = byvars]
+setkeyv(ser, byvars)
+setkeyv(auc, byvars)
+ser <- merge(ser, auc, all.x=TRUE) # add auc to direct binding dil
+```
+
+## Response Call
+
+```{r 'response'}
+  ser[visitno != baseline_visit & dilution == binding_dil & tolower(filter_reason) == "not filtered",
+      response := BAMAresponseCall(ser[visitno != baseline_visit & dilution == binding_dil & tolower(filter_reason) == "not filtered"])]
+
+kableit(dcast.data.table(ser[dilution==binding_dil], filter_reason + visitno ~ response, value.var="response", fun.aggregate = length), caption="Response call by visit and filter_reason")
+```
+
+# Output
+
+```{r 'titrations', eval=runtitrations, echo=runtitrations}
+# separate serum into direct binding dilution and titration dilutions
+cat("## Titration Data\nIf titrations were run, we create a separate titrations dataset containing all dilutions, as well as a serum_bama dataset containing just the direct binding dilution.")
+dil <- copy(ser)
+ser <- ser[dilution == binding_dil]
+
+setkey(dil, spec_primary ,isotype, ptid, antigen, visitno, dilution)
+saveObj("dil", "serum_bama_titration")
+```
+
+## Screening Dilution Data
+
+```{r 'screening'}
+setkey(ser, spec_primary ,isotype, ptid, antigen, visitno)
+saveObj("ser", "serum_bama")
+if(!exists("dil")){dil <- ser} # if no titrations, we create dil to use below, since we didn't run the titrations chunk above
+```
+
+```{r 'standard', eval=runstandard, echo=runstandard}
+cat("## Standard Curve Data\nIf standard curve data was included in the qdata file, we save it to a permanent dataset here.")
+setkey(standard, isotype, antigen, expconc)
+saveObj("standard", "serum_bama_standard")
+```
+
+## CSV files for lab QC process  
+
+```{r 'QC_CSVs'}
+# separate dil and muc by spectype, isotype
+
+# ms <- c("ser", "muc")
+ms <- c("dil", "ser")
+
+specs <- list(dil = unique(dil$spec_primary), ser = unique(ser$spec_primary))
+isos <- list(dil = unique(dil$isotype), ser = unique(ser$isotype))
+texts <- list(dil = "_serum_bama_titration_", ser = "_serum_bama_")
+
+for(m in ms){
+  for(spec in specs[[m]]){
+    for(iso in isos[[m]]){
+      excls <- c("blank", "tab", "spec_actvy", "spec_actvy_baseline", "analysisDilution")
+      if(length(unique(dil[isotype %like% "IgG"]$dilution)) == 1){excls <- c(excls, "auc_scharp")}
+      suffix <- paste0(texts[[m]], spec, "_", iso, "_", format(Sys.time(), "%Y-%m-%d"))
+      writePerm(get(m)[isotype==iso & spec_primary==spec], suffix, qc=TRUE, excl=excls)
+    }
+  }
+}
+```
+
+# QC Tables for Process Diagnostics
+The following tables profile the input data and compare the qdata and the processed adata.
+
+```{r 'QCkables'}
+# data profile of input data
+dP <- dataProfile(bama_unmod)
+kableit(dP, caption="Quick profile of input data file prior to processing")
+
+# serum:
+k1 <- dcast.data.table(dil, spec_primary + isotype + antigen + dilution ~ visitno, value.var="delta", fun.aggregate = length)
+k2 <- dcast.data.table(ser, spec_primary + isotype + ptid + group ~ visitno, value.var="delta", fun.aggregate = length)
+k3 <- dcast.data.table(ser, spec_primary + isotype + group ~ visitno, value.var="delta", fun.aggregate = length)
+
+kableit(k1, caption="Record count for each dilution by antigen and visit")
+kableit(k2, caption="Record count per visit by PTID (serum bama, at direct binding dilution)")
+kableit(k3, caption="Record count per visit by group (serum bama, at direct binding dilution)")
+
+# filter reason
+kable(dcast.data.table(ser, filter_reason + visitno ~ response, value.var="response", fun.aggregate=length), caption="Response call by visit and filter_reason")
+
+# data profile of output data
+s <- paste0(pkgName, "_serum_bama")
+dP <- dataProfile(get(s))
+kable(dP, caption=paste("Quick profile of output serum_bama dataset"))
+kable(summary(get(s)), caption=paste("Summary of output serum_bama dataset"))
+```
+
+## Reproducibility Tables
+
+```{r echo=FALSE, eval=TRUE}
+path <- "reproducibility.R")
+read_chunk(path)
+```
+
+```{r repro, echo=FALSE, eval=TRUE}
+<<reprotab>>
+```
+
+```{r copySourcedFiles, eval = FALSE, echo = FALSE}
+# this copies any files that are sourced in this Rmd to inst/doc/ and vignettes/ so that the package vignettes build properly at installation
+# this is new code, and may still be a little buggy or not function as expectged, particularly on Windows
+thisfile <- knitr::current_input()
+con <- file(thisfile, open = "r")
+file <- readLines(con)
+m1 <- unname(sapply(file, function(x){grepl('sys.source(.*)', x) & !grepl('unname', x)}))
+m2 <- unname(sapply(file, function(x){grepl('read_chunk(.*)', x) & !grepl('unname', x)}))
+filesToCopy1 <- sapply(strsplit(file[m1], split = '"'), function(x) x[2])
+filesToCopy2 <- sapply(strsplit(file[m2], split = '"'), function(x) x[2])
+filesToCopy <- c(filesToCopy1, filesToCopy2)
+for(f in filesToCopy){
+  file_copy(f, paste0(c("../inst/doc/", "../vignettes/"), f), overwrite = TRUE)
+}
+```
