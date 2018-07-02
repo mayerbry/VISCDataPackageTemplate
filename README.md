@@ -79,6 +79,8 @@ Gating plots for review
 
 ## BAMA Notes
 
+In the `inst/exdata` folder of this package, you'll find a file called `arp.csv` that contains the Antigen Reagent Project antigen panels and clades.
+
 For QCing BAMA data, we have worked out the following process with the Tomaras lab:
 1. Build package and internally QC and sanity check the data
 2. Make sure you run `writePerm()` in your BAMA code with `qc=TRUE`. This outputs a CSV QC file for lab programmatic QC.
